@@ -66,16 +66,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Fallback to username if no display name available
     display_name = " ".join(display_name_parts) if display_name_parts else (message.from_user.username or "Unknown User")
     
+    # Get custom title from chat member
+    custom_title = None
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if hasattr(chat_member, 'custom_title') and chat_member.custom_title:
+            custom_title = chat_member.custom_title
+    except Exception as e:
+        logger.debug(f"Could not get custom title for user {user_id}: {e}")
+    
     text = message.text
     
-    # Get thread ID if message is in a thread
+    # Get thread ID and name if message is in a thread
     thread_id = None
+    thread_name = None
     if message.is_topic_message:
         thread_id = message.message_thread_id
+        # Try to get thread name from forum topic
+        try:
+            # The thread name is available in the message_thread_id context
+            # We'll store it when we encounter it
+            if hasattr(message, 'reply_to_message') and message.reply_to_message:
+                if hasattr(message.reply_to_message, 'forum_topic_created'):
+                    thread_name = message.reply_to_message.forum_topic_created.name
+            # Fallback: try to get from chat
+            if not thread_name:
+                thread_name = f"Тред {thread_id}"
+        except Exception as e:
+            logger.debug(f"Could not get thread name: {e}")
+            thread_name = f"Тред {thread_id}"
     
     # Store message in database
-    db.add_message(chat_id, message_id, thread_id, user_id, display_name, text)
-    logger.info(f"Stored message from {display_name} in chat {chat_id}, thread {thread_id}")
+    db.add_message(chat_id, message_id, thread_id, thread_name, user_id, display_name, custom_title, text)
+    logger.info(f"Stored message from {display_name} (title: {custom_title}) in chat {chat_id}, thread {thread_id}")
 
 
 async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -103,7 +126,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             # Extract message IDs and format for AI
             message_ids = [msg[0] for msg in messages]
-            formatted_messages = [(msg[1], msg[2], msg[3]) for msg in messages]  # username, text, timestamp
+            formatted_messages = [(msg[1], msg[2], msg[3], msg[4]) for msg in messages]  # username, custom_title, text, timestamp
             
             # Generate summary using AI
             summary_text = await ai_client.generate_summary(formatted_messages)
@@ -111,8 +134,9 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Delete messages after summarization
             db.delete_messages(message_ids)
             
-            # Format response
-            thread_info = f" (Тред ID: {thread_id})" if thread_id else ""
+            # Format response - use thread name if available
+            thread_name = messages[0][6] if messages and messages[0][6] else None
+            thread_info = f" ({thread_name})" if thread_name else (f" (Тред ID: {thread_id})" if thread_id else "")
             response = f"📝 Саммари {len(messages)} новых сообщений{thread_info}:\n\n{summary_text}"
             
             await status_message.edit_text(response, parse_mode='HTML')
@@ -129,33 +153,27 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Group messages by thread
             from collections import defaultdict
             threads = defaultdict(list)
+            thread_names_map = {}
             
             for msg in all_messages:
-                msg_id, username, text, timestamp, msg_thread_id = msg
-                threads[msg_thread_id].append((msg_id, username, text, timestamp))
-            
-            # Get thread names for context
-            thread_names = {}
-            for tid in threads.keys():
-                if tid is not None:
-                    try:
-                        forum_topic = await context.bot.get_forum_topic_icon_stickers(chat_id)
-                        # Try to get thread name - this is a simplified approach
-                        thread_names[tid] = f"Тред {tid}"
-                    except:
-                        thread_names[tid] = f"Тред {tid}"
+                msg_id, username, custom_title, text, timestamp, msg_thread_id, thread_name = msg
+                threads[msg_thread_id].append((msg_id, username, custom_title, text, timestamp))
+                # Store thread name from database
+                if msg_thread_id and thread_name:
+                    thread_names_map[msg_thread_id] = thread_name
             
             # Prepare grouped messages for AI
             grouped_data = []
             all_message_ids = []
             
             for tid, msgs in threads.items():
-                thread_name = thread_names.get(tid, "Основной чат" if tid is None else f"Тред {tid}")
+                # Use stored thread name or fallback
+                thread_name = thread_names_map.get(tid, "Основной чат" if tid is None else f"Тред {tid}")
                 thread_messages = []
                 
-                for msg_id, username, text, timestamp in msgs:
+                for msg_id, username, custom_title, text, timestamp in msgs:
                     all_message_ids.append(msg_id)
-                    thread_messages.append((username, text, timestamp))
+                    thread_messages.append((username, custom_title, text, timestamp))
                 
                 grouped_data.append((thread_name, thread_messages))
             

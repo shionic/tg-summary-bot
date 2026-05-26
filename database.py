@@ -20,8 +20,10 @@ class Database:
                 chat_id INTEGER NOT NULL,
                 message_id INTEGER NOT NULL,
                 thread_id INTEGER,
+                thread_name TEXT,
                 user_id INTEGER,
                 username TEXT,
+                custom_title TEXT,
                 text TEXT,
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 summarized INTEGER DEFAULT 0,
@@ -43,7 +45,8 @@ class Database:
         conn.close()
     
     def add_message(self, chat_id: int, message_id: int, thread_id: Optional[int], 
-                    user_id: int, username: Optional[str], text: str):
+                    thread_name: Optional[str], user_id: int, username: Optional[str], 
+                    custom_title: Optional[str], text: str):
         """Add a message to the database"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
@@ -51,9 +54,9 @@ class Database:
         try:
             cursor.execute('''
                 INSERT OR REPLACE INTO messages 
-                (chat_id, message_id, thread_id, user_id, username, text, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (chat_id, message_id, thread_id, user_id, username, text, datetime.now()))
+                (chat_id, message_id, thread_id, thread_name, user_id, username, custom_title, text, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (chat_id, message_id, thread_id, thread_name, user_id, username, custom_title, text, datetime.now()))
             
             conn.commit()
         except sqlite3.Error as e:
@@ -69,7 +72,7 @@ class Database:
         
         if thread_id is not None:
             cursor.execute('''
-                SELECT id, username, text, timestamp, thread_id
+                SELECT id, username, custom_title, text, timestamp, thread_id, thread_name
                 FROM messages 
                 WHERE chat_id = ? AND thread_id = ? AND summarized = 0
                 ORDER BY timestamp ASC
@@ -77,7 +80,7 @@ class Database:
             ''', (chat_id, thread_id, limit))
         else:
             cursor.execute('''
-                SELECT id, username, text, timestamp, thread_id
+                SELECT id, username, custom_title, text, timestamp, thread_id, thread_name
                 FROM messages 
                 WHERE chat_id = ? AND thread_id IS NULL AND summarized = 0
                 ORDER BY timestamp ASC
@@ -95,7 +98,7 @@ class Database:
         cursor = conn.cursor()
         
         cursor.execute('''
-            SELECT id, username, text, timestamp, thread_id
+            SELECT id, username, custom_title, text, timestamp, thread_id, thread_name
             FROM messages 
             WHERE chat_id = ? AND summarized = 0
             ORDER BY thread_id, timestamp ASC

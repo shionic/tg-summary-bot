@@ -14,8 +14,10 @@ class AIClient:
     def _format_messages_for_prompt(self, messages: List[tuple]) -> str:
         """Format messages into a readable conversation text"""
         formatted_messages = []
-        for username, text, timestamp in messages:
+        for username, custom_title, text, timestamp in messages:
             user_display = username if username else "Unknown User"
+            if custom_title:
+                user_display = f"{user_display} [{custom_title}]"
             formatted_messages.append(f"{user_display}: {text}")
         
         return "\n".join(formatted_messages)
@@ -26,8 +28,10 @@ class AIClient:
         
         for thread_name, messages in grouped_data:
             section = f"=== {thread_name} ===\n"
-            for username, text, timestamp in messages:
+            for username, custom_title, text, timestamp in messages:
                 user_display = username if username else "Unknown User"
+                if custom_title:
+                    user_display = f"{user_display} [{custom_title}]"
                 section += f"{user_display}: {text}\n"
             formatted_sections.append(section)
         
