@@ -28,10 +28,22 @@ THREADED_SEPARATED = os.getenv('THREADED_SEPARATED', 'true').lower() == 'true'
 AUTO_SUMMARY_ENABLED = os.getenv('AUTO_SUMMARY_ENABLED', 'false').lower() == 'true'
 AUTO_SUMMARY_TIME = os.getenv('AUTO_SUMMARY_TIME', '09:00')
 AUTO_SUMMARY_CHAT_ID = os.getenv('AUTO_SUMMARY_CHAT_ID')
+ALLOWED_CHAT_ID = os.getenv('ALLOWED_CHAT_ID')
 
 # Initialize database and AI client
 db = Database(DATABASE_PATH)
 ai_client = AIClient(AI_API_ENDPOINT, AI_API_KEY, AI_MODEL)
+
+
+def is_chat_allowed(chat_id: int) -> bool:
+    """Check if the chat is allowed to use the bot"""
+    if not ALLOWED_CHAT_ID:
+        return True  # No restriction, allow all chats
+    try:
+        return int(ALLOWED_CHAT_ID) == chat_id
+    except ValueError:
+        logger.error(f"Invalid ALLOWED_CHAT_ID format: {ALLOWED_CHAT_ID}")
+        return True  # Allow all if config is invalid
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -57,6 +69,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     chat_id = message.chat_id
+    
+    # Check if chat is allowed
+    if not is_chat_allowed(chat_id):
+        logger.debug(f"Ignoring message from unauthorized chat {chat_id}")
+        return
+    
     message_id = message.message_id
     user_id = message.from_user.id
     
@@ -119,6 +137,12 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /summary command"""
     message = update.message
     chat_id = message.chat_id
+    
+    # Check if chat is allowed
+    if not is_chat_allowed(chat_id):
+        await message.reply_text("Этот бот не авторизован для использования в этой группе.")
+        logger.warning(f"Unauthorized summary attempt from chat {chat_id}")
+        return
     
     # Get thread ID if command is in a thread
     thread_id = None
