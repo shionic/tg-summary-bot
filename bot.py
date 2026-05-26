@@ -1,5 +1,6 @@
 import os
 import logging
+from datetime import time
 from dotenv import load_dotenv
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -24,6 +25,9 @@ AI_MODEL = os.getenv('AI_MODEL')
 MESSAGE_LIMIT = int(os.getenv('MESSAGE_LIMIT', '100'))
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot_data.db')
 THREADED_SEPARATED = os.getenv('THREADED_SEPARATED', 'true').lower() == 'true'
+AUTO_SUMMARY_ENABLED = os.getenv('AUTO_SUMMARY_ENABLED', 'false').lower() == 'true'
+AUTO_SUMMARY_TIME = os.getenv('AUTO_SUMMARY_TIME', '09:00')
+AUTO_SUMMARY_CHAT_ID = os.getenv('AUTO_SUMMARY_CHAT_ID')
 
 # Initialize database and AI client
 db = Database(DATABASE_PATH)
@@ -204,6 +208,89 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_message.edit_text(f"Ошибка при генерации саммари: {str(e)}")
 
 
+async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
+    """Automatic summary job that runs at scheduled time"""
+    if not AUTO_SUMMARY_CHAT_ID:
+        logger.warning("AUTO_SUMMARY_CHAT_ID not set, skipping automatic summary")
+        return
+    
+    try:
+        chat_id = int(AUTO_SUMMARY_CHAT_ID)
+        logger.info(f"Running automatic summary for chat {chat_id}")
+        
+        # Get all unsummarized messages
+        if THREADED_SEPARATED:
+            # For separated mode, we need to summarize each thread separately
+            # This is a simplified approach - summarize main chat only
+            messages = db.get_unsummarized_messages(chat_id, None, MESSAGE_LIMIT)
+            
+            if not messages:
+                logger.info("No new messages for automatic summary")
+                return
+            
+            # Extract message IDs and format for AI
+            message_ids = [msg[0] for msg in messages]
+            formatted_messages = [(msg[1], msg[2], msg[3], msg[4]) for msg in messages]
+            
+            # Generate summary using AI
+            summary_text = await ai_client.generate_summary(formatted_messages)
+            
+            # Delete messages after summarization
+            db.delete_messages(message_ids)
+            
+            # Send summary
+            response = f"🕐 Автоматическое саммари {len(messages)} новых сообщений:\n\n{summary_text}"
+            await context.bot.send_message(chat_id=chat_id, text=response, parse_mode='HTML')
+            logger.info(f"Sent automatic summary for chat {chat_id}, {len(messages)} messages")
+        
+        else:
+            # Get all unsummarized messages from all threads
+            all_messages = db.get_all_unsummarized_messages(chat_id, MESSAGE_LIMIT)
+            
+            if not all_messages:
+                logger.info("No new messages for automatic summary")
+                return
+            
+            # Group messages by thread
+            from collections import defaultdict
+            threads = defaultdict(list)
+            thread_names_map = {}
+            
+            for msg in all_messages:
+                msg_id, username, custom_title, text, timestamp, msg_thread_id, thread_name = msg
+                threads[msg_thread_id].append((msg_id, username, custom_title, text, timestamp))
+                if msg_thread_id and thread_name:
+                    thread_names_map[msg_thread_id] = thread_name
+            
+            # Prepare grouped messages for AI
+            grouped_data = []
+            all_message_ids = []
+            
+            for tid, msgs in threads.items():
+                thread_name = thread_names_map.get(tid, "Основной чат" if tid is None else f"Тред {tid}")
+                thread_messages = []
+                
+                for msg_id, username, custom_title, text, timestamp in msgs:
+                    all_message_ids.append(msg_id)
+                    thread_messages.append((username, custom_title, text, timestamp))
+                
+                grouped_data.append((thread_name, thread_messages))
+            
+            # Generate combined summary with thread context
+            summary_text = await ai_client.generate_summary_grouped(grouped_data)
+            
+            # Delete messages after summarization
+            db.delete_messages(all_message_ids)
+            
+            # Send summary
+            response = f"🕐 Автоматическое саммари {len(all_messages)} новых сообщений из {len(threads)} тред(ов):\n\n{summary_text}"
+            await context.bot.send_message(chat_id=chat_id, text=response, parse_mode='HTML')
+            logger.info(f"Sent automatic combined summary for chat {chat_id}, {len(threads)} threads, {len(all_messages)} messages")
+    
+    except Exception as e:
+        logger.error(f"Error in automatic summary job: {e}")
+
+
 def main():
     """Start the bot"""
     if not TELEGRAM_BOT_TOKEN:
@@ -219,6 +306,23 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("summary", summary))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Setup automatic summary job if enabled
+    if AUTO_SUMMARY_ENABLED:
+        try:
+            # Parse time from HH:MM format
+            hour, minute = map(int, AUTO_SUMMARY_TIME.split(':'))
+            summary_time = time(hour=hour, minute=minute)
+            
+            # Add daily job
+            job_queue = application.job_queue
+            job_queue.run_daily(auto_summary_job, time=summary_time, name='auto_summary')
+            
+            logger.info(f"Automatic summary scheduled daily at {AUTO_SUMMARY_TIME} for chat {AUTO_SUMMARY_CHAT_ID}")
+        except Exception as e:
+            logger.error(f"Failed to setup automatic summary: {e}")
+    else:
+        logger.info("Automatic summary is disabled")
     
     # Start the bot
     logger.info("Bot started")
