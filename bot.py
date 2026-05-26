@@ -66,14 +66,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Fallback to username if no display name available
     display_name = " ".join(display_name_parts) if display_name_parts else (message.from_user.username or "Unknown User")
     
-    # Get custom title from chat member
+    # Get custom title/tag from message and chat member
     custom_title = None
-    try:
-        chat_member = await context.bot.get_chat_member(chat_id, user_id)
-        if hasattr(chat_member, 'custom_title') and chat_member.custom_title:
-            custom_title = chat_member.custom_title
-    except Exception as e:
-        logger.debug(f"Could not get custom title for user {user_id}: {e}")
+    
+    # First, try to get sender_tag from message (Bot API 9.5+)
+    if hasattr(message, 'sender_tag') and message.sender_tag:
+        custom_title = message.sender_tag
+    
+    # If no sender_tag, try to get custom_title from chat member (for admins)
+    if not custom_title:
+        try:
+            chat_member = await context.bot.get_chat_member(chat_id, user_id)
+            if hasattr(chat_member, 'custom_title') and chat_member.custom_title:
+                custom_title = chat_member.custom_title
+            # Also try to get tag from ChatMemberMember or ChatMemberRestricted (Bot API 9.5+)
+            elif hasattr(chat_member, 'tag') and chat_member.tag:
+                custom_title = chat_member.tag
+        except Exception as e:
+            logger.debug(f"Could not get custom title/tag for user {user_id}: {e}")
     
     text = message.text
     
