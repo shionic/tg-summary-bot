@@ -115,7 +115,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             thread_info = f" (Тред ID: {thread_id})" if thread_id else ""
             response = f"📝 Саммари {len(messages)} новых сообщений{thread_info}:\n\n{summary_text}"
             
-            await status_message.edit_text(response, parse_mode='MarkdownV2')
+            await status_message.edit_text(response, parse_mode='HTML')
             logger.info(f"Generated summary for chat {chat_id}, thread {thread_id}, {len(messages)} messages")
         
         else:
@@ -168,7 +168,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Format response
             response = f"📝 Саммари {len(all_messages)} новых сообщений из {len(threads)} тред(ов):\n\n{summary_text}"
             
-            await status_message.edit_text(response, parse_mode='MarkdownV2')
+            await status_message.edit_text(response, parse_mode='HTML')
             logger.info(f"Generated combined summary for chat {chat_id}, {len(threads)} threads, {len(all_messages)} messages")
     
     except Exception as e:
