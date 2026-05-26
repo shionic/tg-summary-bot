@@ -102,7 +102,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         thread_info = f" (Тред ID: {thread_id})" if thread_id else ""
         response = f"📝 Саммари {len(messages)} новых сообщений{thread_info}:\n\n{summary_text}"
         
-        await status_message.edit_text(response, parse_mode='Markdown')
+        await status_message.edit_text(response, parse_mode='MarkdownV2')
         logger.info(f"Generated summary for chat {chat_id}, thread {thread_id}, {len(messages)} messages")
     
     except Exception as e:
