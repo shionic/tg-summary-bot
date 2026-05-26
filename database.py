@@ -69,7 +69,7 @@ class Database:
         
         if thread_id is not None:
             cursor.execute('''
-                SELECT id, username, text, timestamp 
+                SELECT id, username, text, timestamp, thread_id
                 FROM messages 
                 WHERE chat_id = ? AND thread_id = ? AND summarized = 0
                 ORDER BY timestamp ASC
@@ -77,7 +77,7 @@ class Database:
             ''', (chat_id, thread_id, limit))
         else:
             cursor.execute('''
-                SELECT id, username, text, timestamp 
+                SELECT id, username, text, timestamp, thread_id
                 FROM messages 
                 WHERE chat_id = ? AND thread_id IS NULL AND summarized = 0
                 ORDER BY timestamp ASC
@@ -89,15 +89,35 @@ class Database:
         
         return messages
     
-    def mark_messages_as_summarized(self, message_ids: List[int]):
-        """Mark messages as summarized"""
+    def get_all_unsummarized_messages(self, chat_id: int, limit: int) -> List[Tuple]:
+        """Get all unsummarized messages from a chat (all threads combined)"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            SELECT id, username, text, timestamp, thread_id
+            FROM messages 
+            WHERE chat_id = ? AND summarized = 0
+            ORDER BY thread_id, timestamp ASC
+            LIMIT ?
+        ''', (chat_id, limit))
+        
+        messages = cursor.fetchall()
+        conn.close()
+        
+        return messages
+    
+    def delete_messages(self, message_ids: List[int]):
+        """Delete messages by IDs"""
+        if not message_ids:
+            return
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
         placeholders = ','.join('?' * len(message_ids))
         cursor.execute(f'''
-            UPDATE messages 
-            SET summarized = 1 
+            DELETE FROM messages 
             WHERE id IN ({placeholders})
         ''', message_ids)
         
