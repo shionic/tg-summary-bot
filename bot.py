@@ -5,6 +5,7 @@ from datetime import time
 from typing import List, Optional
 from dotenv import load_dotenv
 from telegram import Message, Update
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import Database
 from ai_client import AIClient, AIInputTooLongError
@@ -92,18 +93,64 @@ async def send_long_reply(message: Message, text: str, first_message: Optional[M
     """Edit the status message with the first chunk and send follow-up chunks."""
     chunks = split_html_message(text)
     if first_message:
-        await first_message.edit_text(chunks[0], parse_mode='HTML')
+        await safe_edit_or_send(message, first_message, chunks[0], parse_mode='HTML')
     else:
-        await message.reply_text(chunks[0], parse_mode='HTML')
+        await safe_reply_text(message, chunks[0], parse_mode='HTML')
 
     for chunk in chunks[1:]:
-        await message.reply_text(chunk, parse_mode='HTML')
+        await safe_reply_text(message, chunk, parse_mode='HTML')
 
 
 async def send_long_chat_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str):
     """Send a long bot message to a chat in Telegram-sized chunks."""
     for chunk in split_html_message(text):
         await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode='HTML')
+
+
+def _same_thread_kwargs(message: Message) -> dict:
+    if message.is_topic_message and message.message_thread_id:
+        return {"message_thread_id": message.message_thread_id}
+    return {}
+
+
+async def safe_reply_text(message: Message, text: str, **kwargs) -> Message:
+    """Reply when possible, otherwise send to the same chat/thread."""
+    try:
+        return await message.reply_text(text, **kwargs)
+    except BadRequest as e:
+        if "message to be replied not found" not in str(e).lower():
+            raise
+
+        logger.warning(
+            f"Reply target message {message.message_id} not found in chat {message.chat_id}; sending regular message"
+        )
+        return await message.get_bot().send_message(
+            chat_id=message.chat_id,
+            text=text,
+            **_same_thread_kwargs(message),
+            **kwargs
+        )
+
+
+async def safe_edit_or_send(
+    source_message: Message,
+    target_message: Optional[Message],
+    text: str,
+    **kwargs
+) -> Message:
+    """Edit a bot status message, or send a new message if editing is no longer possible."""
+    if target_message:
+        try:
+            return await target_message.edit_text(text, **kwargs)
+        except BadRequest as e:
+            logger.warning(f"Could not edit status message {target_message.message_id}: {e}; sending regular message")
+
+    return await source_message.get_bot().send_message(
+        chat_id=source_message.chat_id,
+        text=text,
+        **_same_thread_kwargs(source_message),
+        **kwargs
+    )
 
 
 def is_chat_allowed(chat_id: int) -> bool:
@@ -119,7 +166,8 @@ def is_chat_allowed(chat_id: int) -> bool:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command"""
-    await update.message.reply_text(
+    await safe_reply_text(
+        update.message,
         "Привет! Я бот для создания саммари групповых разговоров.\n\n"
         "Команда:\n"
         "/summary - Получить саммари новых несуммаризированных сообщений\n\n"
@@ -211,7 +259,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Check if chat is allowed
     if not is_chat_allowed(chat_id):
-        await message.reply_text("Этот бот не авторизован для использования в этой группе.")
+        await safe_reply_text(message, "Этот бот не авторизован для использования в этой группе.")
         logger.warning(f"Unauthorized summary attempt from chat {chat_id}")
         return
     
@@ -220,17 +268,18 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message.is_topic_message:
         thread_id = message.message_thread_id
     
-    # Send "thinking" message
-    status_message = await message.reply_text("Генерирую саммари...")
-    
+    status_message = None
     try:
+        # Send "thinking" message
+        status_message = await safe_reply_text(message, "Генерирую саммари...")
+
         # Retrieve unsummarized messages based on THREADED_SEPARATED setting
         if THREADED_SEPARATED:
             # Get messages only from current thread/chat
             messages = db.get_unsummarized_messages(chat_id, thread_id, MESSAGE_LIMIT)
             
             if not messages:
-                await status_message.edit_text("Нет новых сообщений для суммаризации.")
+                await safe_edit_or_send(message, status_message, "Нет новых сообщений для суммаризации.")
                 return
             
             # Extract message IDs and format for AI
@@ -263,7 +312,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             all_messages = db.get_all_unsummarized_messages(chat_id, MESSAGE_LIMIT)
             
             if not all_messages:
-                await status_message.edit_text("Нет новых сообщений для суммаризации.")
+                await safe_edit_or_send(message, status_message, "Нет новых сообщений для суммаризации.")
                 return
             
             # Group messages by thread
@@ -315,12 +364,14 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     except AIInputTooLongError as e:
         logger.warning(f"AI input limit exceeded: {e}")
-        await status_message.edit_text(
+        await safe_edit_or_send(
+            message,
+            status_message,
             "Слишком много текста для AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
         )
     except Exception as e:
         logger.error(f"Error generating summary: {e}")
-        await status_message.edit_text(f"Ошибка при генерации саммари: {str(e)}")
+        await safe_edit_or_send(message, status_message, f"Ошибка при генерации саммари: {str(e)}")
 
 
 async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
@@ -424,6 +475,15 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in automatic summary job: {e}")
 
 
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """Log uncaught handler exceptions."""
+    if context.error:
+        logger.error(
+            "Unhandled Telegram update error",
+            exc_info=(type(context.error), context.error, context.error.__traceback__)
+        )
+
+
 def main():
     """Start the bot"""
     if not TELEGRAM_BOT_TOKEN:
@@ -439,6 +499,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("summary", summary))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_error_handler(error_handler)
     
     # Setup automatic summary job if enabled
     if AUTO_SUMMARY_ENABLED:
