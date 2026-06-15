@@ -160,7 +160,7 @@ def is_chat_allowed(chat_id: int) -> bool:
     try:
         return int(ALLOWED_CHAT_ID) == chat_id
     except ValueError:
-        logger.error(f"Invalid ALLOWED_CHAT_ID format: {ALLOWED_CHAT_ID}")
+        logger.exception(f"Invalid ALLOWED_CHAT_ID format: {ALLOWED_CHAT_ID}")
         return True  # Allow all if config is invalid
 
 
@@ -224,7 +224,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif hasattr(chat_member, 'tag') and chat_member.tag:
                 custom_title = chat_member.tag
         except Exception as e:
-            logger.debug(f"Could not get custom title/tag for user {user_id}: {e}")
+            logger.debug(f"Could not get custom title/tag for user {user_id}", exc_info=True)
     
     text = message.text
     
@@ -244,7 +244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not thread_name:
                 thread_name = f"Тред {thread_id}"
         except Exception as e:
-            logger.debug(f"Could not get thread name: {e}")
+            logger.debug("Could not get thread name", exc_info=True)
             thread_name = f"Тред {thread_id}"
     
     # Store message in database
@@ -370,7 +370,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Слишком много текста для AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
         )
     except Exception as e:
-        logger.error(f"Error generating summary: {e}")
+        logger.exception("Error generating summary")
         await safe_edit_or_send(message, status_message, f"Ошибка при генерации саммари: {str(e)}")
 
 
@@ -472,7 +472,7 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             text="Слишком много текста для автоматического AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
         )
     except Exception as e:
-        logger.error(f"Error in automatic summary job: {e}")
+        logger.exception("Error in automatic summary job")
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
@@ -514,7 +514,7 @@ def main():
             
             logger.info(f"Automatic summary scheduled daily at {AUTO_SUMMARY_TIME} for chat {AUTO_SUMMARY_CHAT_ID}")
         except Exception as e:
-            logger.error(f"Failed to setup automatic summary: {e}")
+            logger.exception("Failed to setup automatic summary")
     else:
         logger.info("Automatic summary is disabled")
     

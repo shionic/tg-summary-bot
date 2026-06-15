@@ -3,6 +3,10 @@ import json
 from typing import Dict, Any
 
 
+class HTTPRequestError(Exception):
+    """Raised when an HTTP request fails."""
+
+
 class HTTPClient:
     """HTTP client for making API requests"""
     
@@ -28,14 +32,13 @@ class HTTPClient:
                         # Handle regular JSON response
                         else:
                             return await response.json()
-                    else:
-                        error_text = await response.text()
-                        raise Exception(f"API request failed with status {response.status}: {error_text}")
+                    error_text = await response.text()
+                    raise HTTPRequestError(f"API request failed with status {response.status}: {error_text}")
         
         except aiohttp.ClientError as e:
-            raise Exception(f"Network error: {str(e)}")
-        except Exception as e:
-            raise Exception(f"Request error: {str(e)}")
+            raise HTTPRequestError(f"Network error: {e}") from e
+        except json.JSONDecodeError as e:
+            raise HTTPRequestError(f"Invalid JSON response: {e}") from e
     
     async def _parse_streaming_response(self, response) -> Dict[str, Any]:
         """Parse Server-Sent Events (SSE) streaming response"""
