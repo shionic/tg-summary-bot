@@ -1,11 +1,13 @@
 import os
 import logging
+import re
 from datetime import time
+from typing import List, Optional
 from dotenv import load_dotenv
-from telegram import Update
+from telegram import Message, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import Database
-from ai_client import AIClient
+from ai_client import AIClient, AIInputTooLongError
 
 # Load environment variables
 load_dotenv()
@@ -23,6 +25,9 @@ AI_API_ENDPOINT = os.getenv('AI_API_ENDPOINT')
 AI_API_KEY = os.getenv('AI_API_KEY')
 AI_MODEL = os.getenv('AI_MODEL')
 MESSAGE_LIMIT = int(os.getenv('MESSAGE_LIMIT', '100'))
+AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', '1500'))
+AI_MAX_INPUT_CHARS = int(os.getenv('AI_MAX_INPUT_CHARS', '60000'))
+TELEGRAM_MESSAGE_LIMIT = min(int(os.getenv('TELEGRAM_MESSAGE_LIMIT', '3900')), 4096)
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot_data.db')
 THREADED_SEPARATED = os.getenv('THREADED_SEPARATED', 'true').lower() == 'true'
 AUTO_SUMMARY_ENABLED = os.getenv('AUTO_SUMMARY_ENABLED', 'false').lower() == 'true'
@@ -32,7 +37,73 @@ ALLOWED_CHAT_ID = os.getenv('ALLOWED_CHAT_ID')
 
 # Initialize database and AI client
 db = Database(DATABASE_PATH)
-ai_client = AIClient(AI_API_ENDPOINT, AI_API_KEY, AI_MODEL)
+ai_client = AIClient(AI_API_ENDPOINT, AI_API_KEY, AI_MODEL, AI_MAX_TOKENS, AI_MAX_INPUT_CHARS)
+
+HTML_TAG_RE = re.compile(r'</?(b|i|u|code)>')
+
+
+def split_html_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> List[str]:
+    """Split Telegram HTML into chunks without leaving supported tags unclosed."""
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    current = ""
+    open_tags = []
+    index = 0
+
+    while index < len(text):
+        match = HTML_TAG_RE.match(text, index)
+        if match:
+            unit = match.group(0)
+            index = match.end()
+        else:
+            unit = text[index]
+            index += 1
+
+        closing_tags = ''.join(f'</{tag}>' for tag in reversed(open_tags))
+        if current and len(current) + len(unit) + len(closing_tags) > limit:
+            chunks.append(current.rstrip() + closing_tags)
+            current = ''.join(f'<{tag}>' for tag in open_tags)
+            if unit == "\n":
+                continue
+
+        current += unit
+
+        tag_match = HTML_TAG_RE.fullmatch(unit)
+        if tag_match:
+            tag = tag_match.group(1)
+            if unit.startswith("</"):
+                for pos in range(len(open_tags) - 1, -1, -1):
+                    if open_tags[pos] == tag:
+                        del open_tags[pos]
+                        break
+            else:
+                open_tags.append(tag)
+
+    if current:
+        closing_tags = ''.join(f'</{tag}>' for tag in reversed(open_tags))
+        chunks.append(current.rstrip() + closing_tags)
+
+    return chunks
+
+
+async def send_long_reply(message: Message, text: str, first_message: Optional[Message] = None):
+    """Edit the status message with the first chunk and send follow-up chunks."""
+    chunks = split_html_message(text)
+    if first_message:
+        await first_message.edit_text(chunks[0], parse_mode='HTML')
+    else:
+        await message.reply_text(chunks[0], parse_mode='HTML')
+
+    for chunk in chunks[1:]:
+        await message.reply_text(chunk, parse_mode='HTML')
+
+
+async def send_long_chat_message(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str):
+    """Send a long bot message to a chat in Telegram-sized chunks."""
+    for chunk in split_html_message(text):
+        await context.bot.send_message(chat_id=chat_id, text=chunk, parse_mode='HTML')
 
 
 def is_chat_allowed(chat_id: int) -> bool:
@@ -163,8 +234,9 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             
             # Extract message IDs and format for AI
-            message_ids = [msg[0] for msg in messages]
             formatted_messages = [(msg[1], msg[2], msg[3], msg[4]) for msg in messages]  # username, custom_title, text, timestamp
+            formatted_messages, was_trimmed = ai_client.fit_messages_to_input_limit(formatted_messages)
+            message_ids = [msg[0] for msg in messages[:len(formatted_messages)]]
             
             # Generate summary using AI
             summary_text = await ai_client.generate_summary(formatted_messages)
@@ -175,10 +247,16 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Format response - use thread name if available
             thread_name = messages[0][6] if messages and messages[0][6] else None
             thread_info = f" ({thread_name})" if thread_name else (f" (Тред ID: {thread_id})" if thread_id else "")
-            response = f"📝 Саммари {len(messages)} новых сообщений{thread_info}:\n\n{summary_text}"
+            count_info = f"{len(formatted_messages)} новых сообщений"
+            if was_trimmed:
+                count_info += f" из {len(messages)} доступных"
+            response = f"📝 Саммари {count_info}{thread_info}:\n\n{summary_text}"
             
-            await status_message.edit_text(response, parse_mode='HTML')
-            logger.info(f"Generated summary for chat {chat_id}, thread {thread_id}, {len(messages)} messages")
+            await send_long_reply(message, response, status_message)
+            logger.info(
+                f"Generated summary for chat {chat_id}, thread {thread_id}, "
+                f"{len(formatted_messages)} of {len(messages)} messages"
+            )
         
         else:
             # Get all unsummarized messages from all threads
@@ -216,17 +294,30 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 grouped_data.append((thread_name, thread_messages))
             
             # Generate combined summary with thread context
+            grouped_data, included_message_count, was_trimmed = ai_client.fit_grouped_data_to_input_limit(grouped_data)
+            all_message_ids = all_message_ids[:included_message_count]
             summary_text = await ai_client.generate_summary_grouped(grouped_data)
             
             # Delete messages after summarization
             db.delete_messages(all_message_ids)
             
             # Format response
-            response = f"📝 Саммари {len(all_messages)} новых сообщений из {len(threads)} тред(ов):\n\n{summary_text}"
+            count_info = f"{included_message_count} новых сообщений"
+            if was_trimmed:
+                count_info += f" из {len(all_messages)} доступных"
+            response = f"📝 Саммари {count_info} из {len(grouped_data)} тред(ов):\n\n{summary_text}"
             
-            await status_message.edit_text(response, parse_mode='HTML')
-            logger.info(f"Generated combined summary for chat {chat_id}, {len(threads)} threads, {len(all_messages)} messages")
+            await send_long_reply(message, response, status_message)
+            logger.info(
+                f"Generated combined summary for chat {chat_id}, {len(grouped_data)} threads, "
+                f"{included_message_count} of {len(all_messages)} messages"
+            )
     
+    except AIInputTooLongError as e:
+        logger.warning(f"AI input limit exceeded: {e}")
+        await status_message.edit_text(
+            "Слишком много текста для AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
+        )
     except Exception as e:
         logger.error(f"Error generating summary: {e}")
         await status_message.edit_text(f"Ошибка при генерации саммари: {str(e)}")
@@ -253,8 +344,9 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
                 return
             
             # Extract message IDs and format for AI
-            message_ids = [msg[0] for msg in messages]
             formatted_messages = [(msg[1], msg[2], msg[3], msg[4]) for msg in messages]
+            formatted_messages, was_trimmed = ai_client.fit_messages_to_input_limit(formatted_messages)
+            message_ids = [msg[0] for msg in messages[:len(formatted_messages)]]
             
             # Generate summary using AI
             summary_text = await ai_client.generate_summary(formatted_messages)
@@ -263,9 +355,12 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             db.delete_messages(message_ids)
             
             # Send summary
-            response = f"🕐 Автоматическое саммари {len(messages)} новых сообщений:\n\n{summary_text}"
-            await context.bot.send_message(chat_id=chat_id, text=response, parse_mode='HTML')
-            logger.info(f"Sent automatic summary for chat {chat_id}, {len(messages)} messages")
+            count_info = f"{len(formatted_messages)} новых сообщений"
+            if was_trimmed:
+                count_info += f" из {len(messages)} доступных"
+            response = f"🕐 Автоматическое саммари {count_info}:\n\n{summary_text}"
+            await send_long_chat_message(context, chat_id, response)
+            logger.info(f"Sent automatic summary for chat {chat_id}, {len(formatted_messages)} of {len(messages)} messages")
         
         else:
             # Get all unsummarized messages from all threads
@@ -301,16 +396,30 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
                 grouped_data.append((thread_name, thread_messages))
             
             # Generate combined summary with thread context
+            grouped_data, included_message_count, was_trimmed = ai_client.fit_grouped_data_to_input_limit(grouped_data)
+            all_message_ids = all_message_ids[:included_message_count]
             summary_text = await ai_client.generate_summary_grouped(grouped_data)
             
             # Delete messages after summarization
             db.delete_messages(all_message_ids)
             
             # Send summary
-            response = f"🕐 Автоматическое саммари {len(all_messages)} новых сообщений из {len(threads)} тред(ов):\n\n{summary_text}"
-            await context.bot.send_message(chat_id=chat_id, text=response, parse_mode='HTML')
-            logger.info(f"Sent automatic combined summary for chat {chat_id}, {len(threads)} threads, {len(all_messages)} messages")
+            count_info = f"{included_message_count} новых сообщений"
+            if was_trimmed:
+                count_info += f" из {len(all_messages)} доступных"
+            response = f"🕐 Автоматическое саммари {count_info} из {len(grouped_data)} тред(ов):\n\n{summary_text}"
+            await send_long_chat_message(context, chat_id, response)
+            logger.info(
+                f"Sent automatic combined summary for chat {chat_id}, {len(grouped_data)} threads, "
+                f"{included_message_count} of {len(all_messages)} messages"
+            )
     
+    except AIInputTooLongError as e:
+        logger.warning(f"Automatic summary AI input limit exceeded: {e}")
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Слишком много текста для автоматического AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
+        )
     except Exception as e:
         logger.error(f"Error in automatic summary job: {e}")
 

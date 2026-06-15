@@ -43,6 +43,9 @@ AI_API_ENDPOINT=https://api.openai.com/v1/chat/completions
 AI_API_KEY=your_api_key_here
 AI_MODEL=gpt-3.5-turbo
 MESSAGE_LIMIT=100
+AI_MAX_TOKENS=1500
+AI_MAX_INPUT_CHARS=60000
+TELEGRAM_MESSAGE_LIMIT=3900
 DATABASE_PATH=bot_data.db
 ```
 
@@ -55,7 +58,15 @@ DATABASE_PATH=bot_data.db
 | `AI_API_KEY` | API key for AI service | Required |
 | `AI_MODEL` | Model name to use | `gpt-3.5-turbo` |
 | `MESSAGE_LIMIT` | Max messages to include in summary | `100` |
+| `AI_MAX_TOKENS` | Max tokens to request for generated summaries | `1500` |
+| `AI_MAX_INPUT_CHARS` | Max formatted conversation characters allowed in one AI request | `60000` |
+| `TELEGRAM_MESSAGE_LIMIT` | Max characters per Telegram summary chunk | `3900` |
 | `DATABASE_PATH` | SQLite database file path | `bot_data.db` |
+| `THREADED_SEPARATED` | Summarize only current thread when `true`, or all threads grouped when `false` | `true` |
+| `AUTO_SUMMARY_ENABLED` | Enable daily automatic summaries | `false` |
+| `AUTO_SUMMARY_TIME` | Daily automatic summary time in `HH:MM` format | `09:00` |
+| `AUTO_SUMMARY_CHAT_ID` | Chat ID for automatic summaries | Optional |
+| `ALLOWED_CHAT_ID` | Restrict the bot to a single chat ID | Optional |
 
 ## Usage
 
@@ -79,6 +90,8 @@ The bot tracks which messages have been summarized:
 - After generating a summary, those messages are marked as summarized
 - Next time you run `/summary`, only new messages since the last summary will be included
 - Each summary includes the username of who sent each message
+- Long summaries are split into multiple Telegram messages to stay below Telegram message length limits
+- If the formatted AI input exceeds `AI_MAX_INPUT_CHARS`, the bot summarizes the largest fitting batch and keeps the remaining messages for the next summary
 
 ## Thread Support
 

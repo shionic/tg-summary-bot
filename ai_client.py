@@ -1,14 +1,27 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from http_client import HTTPClient
+
+
+class AIInputTooLongError(Exception):
+    """Raised when the formatted AI input exceeds the configured limit."""
 
 
 class AIClient:
     """AI client for generating summaries using Chat Completions API"""
     
-    def __init__(self, api_endpoint: str, api_key: str, model: str):
+    def __init__(
+        self,
+        api_endpoint: str,
+        api_key: str,
+        model: str,
+        max_tokens: Optional[int] = None,
+        max_input_chars: Optional[int] = None
+    ):
         self.api_endpoint = api_endpoint
         self.api_key = api_key
         self.model = model
+        self.max_tokens = max_tokens or 1500
+        self.max_input_chars = max_input_chars or 60000
         self.http_client = HTTPClient()
     
     def _format_messages_for_prompt(self, messages: List[tuple]) -> str:
@@ -36,9 +49,80 @@ class AIClient:
             formatted_sections.append(section)
         
         return "\n\n".join(formatted_sections)
+
+    def fit_messages_to_input_limit(self, messages: List[tuple]) -> Tuple[List[tuple], bool]:
+        """Return the largest message prefix that fits the configured input limit."""
+        if len(self._format_messages_for_prompt(messages)) <= self.max_input_chars:
+            return messages, False
+
+        low = 0
+        high = len(messages)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if len(self._format_messages_for_prompt(messages[:mid])) <= self.max_input_chars:
+                low = mid
+            else:
+                high = mid - 1
+
+        if low == 0:
+            raise AIInputTooLongError(
+                f"AI input is too long: first message exceeds limit of {self.max_input_chars} chars."
+            )
+
+        return messages[:low], True
+
+    def fit_grouped_data_to_input_limit(self, grouped_data: List[tuple]) -> Tuple[List[tuple], int, bool]:
+        """Return grouped message prefixes that fit the configured input limit."""
+        if len(self._format_grouped_messages_for_prompt(grouped_data)) <= self.max_input_chars:
+            return grouped_data, sum(len(messages) for _, messages in grouped_data), False
+
+        flattened = []
+        for thread_name, messages in grouped_data:
+            for message in messages:
+                flattened.append((thread_name, message))
+
+        low = 0
+        high = len(flattened)
+        while low < high:
+            mid = (low + high + 1) // 2
+            candidate = self._rebuild_grouped_prefix(flattened[:mid])
+            if len(self._format_grouped_messages_for_prompt(candidate)) <= self.max_input_chars:
+                low = mid
+            else:
+                high = mid - 1
+
+        if low == 0:
+            raise AIInputTooLongError(
+                f"AI input is too long: first grouped message exceeds limit of {self.max_input_chars} chars."
+            )
+
+        return self._rebuild_grouped_prefix(flattened[:low]), low, True
+
+    def _rebuild_grouped_prefix(self, flattened_messages: List[tuple]) -> List[tuple]:
+        grouped = []
+        current_thread_name = None
+        current_messages = []
+
+        for thread_name, message in flattened_messages:
+            if thread_name != current_thread_name:
+                if current_messages:
+                    grouped.append((current_thread_name, current_messages))
+                current_thread_name = thread_name
+                current_messages = []
+            current_messages.append(message)
+
+        if current_messages:
+            grouped.append((current_thread_name, current_messages))
+
+        return grouped
     
     def _build_chat_completion_payload(self, conversation_text: str, is_grouped: bool = False) -> Dict[str, Any]:
         """Build the Chat Completions API payload"""
+        if len(conversation_text) > self.max_input_chars:
+            raise AIInputTooLongError(
+                f"AI input is too long: {len(conversation_text)} chars, limit is {self.max_input_chars}. "
+                "Reduce MESSAGE_LIMIT or increase AI_MAX_INPUT_CHARS for a model with a larger context window."
+            )
         
         if is_grouped:
             system_content = "Ты дружелюбный помощник, который суммаризирует групповые чаты с несколькими тредами. Пиши естественно и по-человечески, обращайся к участникам по именам. Предоставь краткое саммари для каждого треда отдельно, указывая название треда. Упоминай кто что обсуждал, используя их имена. Используй ТОЛЬКО эти HTML теги для форматирования: <b>жирный</b>, <i>курсив</i>, <u>подчеркнутый</u>, <code>моноширинный</code>. НЕ используй теги <strong>, <em>, <ul>, <li>, <p>, <br> или любые другие - они не поддерживаются. Отвечай на русском языке."
@@ -58,7 +142,7 @@ class AIClient:
                 }
             ],
             "temperature": 0.7,
-            "max_tokens": 500
+            "max_tokens": self.max_tokens
         }
     
     def _extract_summary_from_response(self, response_data: Dict[str, Any]) -> str:
