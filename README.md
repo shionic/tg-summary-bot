@@ -76,6 +76,8 @@ DATABASE_PATH=bot_data.db
 | `AUTO_SUMMARY_CHAT_ID` | Chat ID for automatic summaries | Optional |
 | `ALLOWED_CHAT_ID` | Restrict the bot to a single chat ID | Optional |
 
+Automatic summaries require the JobQueue extra from `python-telegram-bot`. It is included in `requirements.txt`; reinstall dependencies after updating.
+
 ## Usage
 
 1. Start the bot:

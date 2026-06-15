@@ -580,6 +580,12 @@ def main():
             
             # Add daily job
             job_queue = application.job_queue
+            if job_queue is None:
+                raise RuntimeError(
+                    "JobQueue is unavailable. Install dependencies with "
+                    "`pip install -r requirements.txt` so python-telegram-bot[job-queue] is installed."
+                )
+
             job_queue.run_daily(auto_summary_job, time=summary_time, name='auto_summary')
             
             logger.info(f"Automatic summary scheduled daily at {AUTO_SUMMARY_TIME} for chat {AUTO_SUMMARY_CHAT_ID}")
