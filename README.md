@@ -45,6 +45,10 @@ AI_MODEL=gpt-3.5-turbo
 MESSAGE_LIMIT=100
 AI_MAX_TOKENS=1500
 AI_MAX_INPUT_CHARS=60000
+AI_REQUEST_TIMEOUT=120
+SIMPLE_AI_BOT_ENABLED=false
+SIMPLE_AI_BOT_USERNAME=
+SIMPLE_AI_MAX_TOKENS=250
 TELEGRAM_MESSAGE_LIMIT=3900
 DATABASE_PATH=bot_data.db
 ```
@@ -60,6 +64,10 @@ DATABASE_PATH=bot_data.db
 | `MESSAGE_LIMIT` | Max messages to include in summary | `100` |
 | `AI_MAX_TOKENS` | Max tokens to request for generated summaries | `1500` |
 | `AI_MAX_INPUT_CHARS` | Max formatted conversation characters allowed in one AI request | `60000` |
+| `AI_REQUEST_TIMEOUT` | Timeout in seconds for one AI API request, including streaming responses | `120` |
+| `SIMPLE_AI_BOT_ENABLED` | Enable one-shot AI replies when a message mentions the bot username | `false` |
+| `SIMPLE_AI_BOT_USERNAME` | Bot username used for mention matching; fetched from Telegram when empty | Optional |
+| `SIMPLE_AI_MAX_TOKENS` | Max tokens to request for simple mention replies | `250` |
 | `TELEGRAM_MESSAGE_LIMIT` | Max characters per Telegram summary chunk | `3900` |
 | `DATABASE_PATH` | SQLite database file path | `bot_data.db` |
 | `THREADED_SEPARATED` | Summarize only current thread when `true`, or all threads grouped when `false` | `true` |
@@ -82,6 +90,12 @@ python bot.py
 4. Available commands:
    - `/start` - Show welcome message and help
    - `/summary` - Generate summary of new unsummarized messages
+
+5. Optional simple AI replies:
+   - Set `SIMPLE_AI_BOT_ENABLED=true`
+   - Mention the bot in a regular message, for example `@my_bot_name что ты умеешь?`
+   - The bot removes `@my_bot_name` before sending the request to the AI endpoint
+   - Each mention is answered independently, without chat history
 
 ## How It Works
 

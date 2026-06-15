@@ -1,3 +1,4 @@
+import asyncio
 import aiohttp
 import json
 from typing import Dict, Any
@@ -37,6 +38,8 @@ class HTTPClient:
         
         except aiohttp.ClientError as e:
             raise HTTPRequestError(f"Network error: {e}") from e
+        except asyncio.TimeoutError as e:
+            raise HTTPRequestError(f"AI request timed out after {self.timeout.total} seconds") from e
         except json.JSONDecodeError as e:
             raise HTTPRequestError(f"Invalid JSON response: {e}") from e
     

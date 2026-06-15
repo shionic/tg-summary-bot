@@ -28,6 +28,7 @@ AI_MODEL = os.getenv('AI_MODEL')
 MESSAGE_LIMIT = int(os.getenv('MESSAGE_LIMIT', '100'))
 AI_MAX_TOKENS = int(os.getenv('AI_MAX_TOKENS', '1500'))
 AI_MAX_INPUT_CHARS = int(os.getenv('AI_MAX_INPUT_CHARS', '60000'))
+AI_REQUEST_TIMEOUT = int(os.getenv('AI_REQUEST_TIMEOUT', '120'))
 TELEGRAM_MESSAGE_LIMIT = min(int(os.getenv('TELEGRAM_MESSAGE_LIMIT', '3900')), 4096)
 DATABASE_PATH = os.getenv('DATABASE_PATH', 'bot_data.db')
 THREADED_SEPARATED = os.getenv('THREADED_SEPARATED', 'true').lower() == 'true'
@@ -35,10 +36,13 @@ AUTO_SUMMARY_ENABLED = os.getenv('AUTO_SUMMARY_ENABLED', 'false').lower() == 'tr
 AUTO_SUMMARY_TIME = os.getenv('AUTO_SUMMARY_TIME', '09:00')
 AUTO_SUMMARY_CHAT_ID = os.getenv('AUTO_SUMMARY_CHAT_ID')
 ALLOWED_CHAT_ID = os.getenv('ALLOWED_CHAT_ID')
+SIMPLE_AI_BOT_ENABLED = os.getenv('SIMPLE_AI_BOT_ENABLED', 'false').lower() == 'true'
+SIMPLE_AI_BOT_USERNAME = os.getenv('SIMPLE_AI_BOT_USERNAME')
+SIMPLE_AI_MAX_TOKENS = int(os.getenv('SIMPLE_AI_MAX_TOKENS', '250'))
 
 # Initialize database and AI client
 db = Database(DATABASE_PATH)
-ai_client = AIClient(AI_API_ENDPOINT, AI_API_KEY, AI_MODEL, AI_MAX_TOKENS, AI_MAX_INPUT_CHARS)
+ai_client = AIClient(AI_API_ENDPOINT, AI_API_KEY, AI_MODEL, AI_MAX_TOKENS, AI_MAX_INPUT_CHARS, AI_REQUEST_TIMEOUT)
 
 HTML_TAG_RE = re.compile(r'</?(b|i|u|code)>')
 
@@ -113,6 +117,38 @@ def _same_thread_kwargs(message: Message) -> dict:
     return {}
 
 
+def _normalize_bot_username(username: Optional[str]) -> Optional[str]:
+    if not username:
+        return None
+    return username.strip().lstrip('@') or None
+
+
+async def get_simple_ai_bot_username(context: ContextTypes.DEFAULT_TYPE) -> Optional[str]:
+    """Return configured bot username or fetch it from Telegram once."""
+    configured_username = _normalize_bot_username(SIMPLE_AI_BOT_USERNAME)
+    if configured_username:
+        return configured_username
+
+    cached_username = context.bot_data.get("simple_ai_bot_username")
+    if cached_username:
+        return cached_username
+
+    bot_info = await context.bot.get_me()
+    fetched_username = _normalize_bot_username(bot_info.username)
+    if fetched_username:
+        context.bot_data["simple_ai_bot_username"] = fetched_username
+    return fetched_username
+
+
+def strip_bot_mention(text: str, bot_username: str) -> Optional[str]:
+    """Remove @bot_username mentions and return the direct request text."""
+    mention_re = re.compile(rf'(?<!\w)@{re.escape(bot_username)}(?!\w)', re.IGNORECASE)
+    if not mention_re.search(text):
+        return None
+
+    return mention_re.sub('', text).strip()
+
+
 async def safe_reply_text(message: Message, text: str, **kwargs) -> Message:
     """Reply when possible, otherwise send to the same chat/thread."""
     try:
@@ -175,6 +211,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def maybe_handle_simple_ai_request(message: Message, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Generate one stateless AI response when the message mentions this bot."""
+    if not SIMPLE_AI_BOT_ENABLED:
+        return False
+
+    bot_username = await get_simple_ai_bot_username(context)
+    if not bot_username:
+        logger.warning("Simple AI bot is enabled, but bot username could not be resolved")
+        return False
+
+    request_text = strip_bot_mention(message.text, bot_username)
+    if request_text is None:
+        return False
+
+    if not request_text:
+        await safe_reply_text(message, "Напишите вопрос после упоминания бота.")
+        return True
+
+    try:
+        response_text = await ai_client.generate_simple_response(request_text, SIMPLE_AI_MAX_TOKENS)
+        await safe_reply_text(message, response_text)
+        logger.info(f"Generated simple AI response in chat {message.chat_id}")
+    except AIInputTooLongError:
+        await safe_reply_text(message, "Сообщение слишком длинное для AI-запроса.")
+    except Exception as e:
+        logger.exception("Error generating simple AI response")
+        await safe_reply_text(message, f"Ошибка при генерации ответа: {str(e)}")
+
+    return True
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Store incoming messages in the database"""
     message = update.message
@@ -192,6 +259,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Check if chat is allowed
     if not is_chat_allowed(chat_id):
         logger.debug(f"Ignoring message from unauthorized chat {chat_id}")
+        return
+
+    if await maybe_handle_simple_ai_request(message, context):
         return
     
     message_id = message.message_id

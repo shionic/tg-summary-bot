@@ -15,14 +15,28 @@ class AIClient:
         api_key: str,
         model: str,
         max_tokens: Optional[int] = None,
-        max_input_chars: Optional[int] = None
+        max_input_chars: Optional[int] = None,
+        request_timeout: Optional[int] = None
     ):
         self.api_endpoint = api_endpoint
         self.api_key = api_key
         self.model = model
         self.max_tokens = max_tokens or 1500
         self.max_input_chars = max_input_chars or 60000
-        self.http_client = HTTPClient()
+        self.http_client = HTTPClient(request_timeout or 120)
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+    async def _post_chat_completion(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return await self.http_client.post_json(
+            self.api_endpoint,
+            self._headers(),
+            payload
+        )
     
     def _format_messages_for_prompt(self, messages: List[tuple]) -> str:
         """Format messages into a readable conversation text"""
@@ -144,6 +158,33 @@ class AIClient:
             "temperature": 0.7,
             "max_tokens": self.max_tokens
         }
+
+    def _build_simple_response_payload(self, request_text: str, max_tokens: int) -> Dict[str, Any]:
+        """Build a one-shot Chat Completions payload for direct bot mentions."""
+        if len(request_text) > self.max_input_chars:
+            raise AIInputTooLongError(
+                f"AI input is too long: {len(request_text)} chars, limit is {self.max_input_chars}."
+            )
+
+        return {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Ты простой Telegram-бот-помощник. Отвечай на русском языке кратко, "
+                        "понятно и по делу. Не используй Markdown или HTML. Не учитывай историю: "
+                        "отвечай только на текущее сообщение пользователя."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": request_text
+                }
+            ],
+            "temperature": 0.5,
+            "max_tokens": max_tokens
+        }
     
     def _extract_summary_from_response(self, response_data: Dict[str, Any]) -> str:
         """Extract summary text from API response"""
@@ -161,18 +202,8 @@ class AIClient:
         # Build payload
         payload = self._build_chat_completion_payload(conversation_text, is_grouped=False)
         
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        
         # Make API request
-        response_data = await self.http_client.post_json(
-            self.api_endpoint,
-            headers,
-            payload
-        )
+        response_data = await self._post_chat_completion(payload)
         
         # Extract and return summary
         return self._extract_summary_from_response(response_data)
@@ -185,18 +216,14 @@ class AIClient:
         # Build payload
         payload = self._build_chat_completion_payload(conversation_text, is_grouped=True)
         
-        # Prepare headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
-        }
-        
         # Make API request
-        response_data = await self.http_client.post_json(
-            self.api_endpoint,
-            headers,
-            payload
-        )
+        response_data = await self._post_chat_completion(payload)
         
         # Extract and return summary
+        return self._extract_summary_from_response(response_data)
+
+    async def generate_simple_response(self, request_text: str, max_tokens: int = 250) -> str:
+        """Generate a short stateless response to one user message."""
+        payload = self._build_simple_response_payload(request_text, max_tokens)
+        response_data = await self._post_chat_completion(payload)
         return self._extract_summary_from_response(response_data)
