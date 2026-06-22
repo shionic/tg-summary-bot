@@ -1,9 +1,27 @@
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 from http_client import HTTPClient
 
 
 class AIInputTooLongError(Exception):
     """Raised when the formatted AI input exceeds the configured limit."""
+
+
+@dataclass(frozen=True)
+class AITokenUsage:
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+    @property
+    def has_summary_tokens(self) -> bool:
+        return self.input_tokens is not None or self.output_tokens is not None
+
+
+@dataclass(frozen=True)
+class AITextResponse:
+    text: str
+    token_usage: Optional[AITokenUsage] = None
 
 
 class AIClient:
@@ -193,8 +211,33 @@ class AIClient:
             return summary.strip()
         except KeyError as e:
             raise Exception(f"Unexpected API response format: {str(e)}")
+
+    def _extract_token_usage_from_response(self, response_data: Dict[str, Any]) -> Optional[AITokenUsage]:
+        """Extract token usage when the API response provides it."""
+        usage = response_data.get("usage")
+        if not isinstance(usage, dict):
+            return None
+
+        input_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+        output_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+        total_tokens = usage.get("total_tokens")
+
+        if input_tokens is None and output_tokens is None and total_tokens is None:
+            return None
+
+        return AITokenUsage(
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            total_tokens=total_tokens
+        )
+
+    def _extract_text_response_from_response(self, response_data: Dict[str, Any]) -> AITextResponse:
+        return AITextResponse(
+            text=self._extract_summary_from_response(response_data),
+            token_usage=self._extract_token_usage_from_response(response_data)
+        )
     
-    async def generate_summary(self, messages: List[tuple]) -> str:
+    async def generate_summary(self, messages: List[tuple]) -> AITextResponse:
         """Generate a summary of messages using AI API"""
         # Format messages
         conversation_text = self._format_messages_for_prompt(messages)
@@ -206,9 +249,9 @@ class AIClient:
         response_data = await self._post_chat_completion(payload)
         
         # Extract and return summary
-        return self._extract_summary_from_response(response_data)
+        return self._extract_text_response_from_response(response_data)
     
-    async def generate_summary_grouped(self, grouped_data: List[tuple]) -> str:
+    async def generate_summary_grouped(self, grouped_data: List[tuple]) -> AITextResponse:
         """Generate a summary of grouped messages (by thread) using AI API"""
         # Format grouped messages
         conversation_text = self._format_grouped_messages_for_prompt(grouped_data)
@@ -220,7 +263,7 @@ class AIClient:
         response_data = await self._post_chat_completion(payload)
         
         # Extract and return summary
-        return self._extract_summary_from_response(response_data)
+        return self._extract_text_response_from_response(response_data)
 
     async def generate_simple_response(self, request_text: str, max_tokens: int = 250) -> str:
         """Generate a short stateless response to one user message."""

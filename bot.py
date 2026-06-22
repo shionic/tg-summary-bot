@@ -8,7 +8,7 @@ from telegram import Message, Update
 from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import Database
-from ai_client import AIClient, AIInputTooLongError
+from ai_client import AIClient, AIInputTooLongError, AITokenUsage
 
 # Load environment variables
 load_dotenv()
@@ -45,6 +45,22 @@ db = Database(DATABASE_PATH)
 ai_client = AIClient(AI_API_ENDPOINT, AI_API_KEY, AI_MODEL, AI_MAX_TOKENS, AI_MAX_INPUT_CHARS, AI_REQUEST_TIMEOUT)
 
 HTML_TAG_RE = re.compile(r'</?(b|i|u|code)>')
+
+
+def format_token_usage(token_usage: Optional[AITokenUsage]) -> str:
+    """Format AI token usage for a Telegram summary footer."""
+    if not token_usage or not token_usage.has_summary_tokens:
+        return ""
+
+    parts = []
+    if token_usage.input_tokens is not None:
+        parts.append(f"input: {token_usage.input_tokens}")
+    if token_usage.output_tokens is not None:
+        parts.append(f"output: {token_usage.output_tokens}")
+    if token_usage.total_tokens is not None:
+        parts.append(f"total: {token_usage.total_tokens}")
+
+    return f"\n\n<code>Tokens: {', '.join(parts)}</code>"
 
 
 def split_html_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> List[str]:
@@ -358,7 +374,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             message_ids = [msg[0] for msg in messages[:len(formatted_messages)]]
             
             # Generate summary using AI
-            summary_text = await ai_client.generate_summary(formatted_messages)
+            summary_result = await ai_client.generate_summary(formatted_messages)
             
             # Delete messages after summarization
             db.delete_messages(message_ids)
@@ -369,7 +385,10 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count_info = f"{len(formatted_messages)} новых сообщений"
             if was_trimmed:
                 count_info += f" из {len(messages)} доступных"
-            response = f"📝 Саммари {count_info}{thread_info}:\n\n{summary_text}"
+            response = (
+                f"📝 Саммари {count_info}{thread_info}:\n\n"
+                f"{summary_result.text}{format_token_usage(summary_result.token_usage)}"
+            )
             
             await send_long_reply(message, response, status_message)
             logger.info(
@@ -415,7 +434,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Generate combined summary with thread context
             grouped_data, included_message_count, was_trimmed = ai_client.fit_grouped_data_to_input_limit(grouped_data)
             all_message_ids = all_message_ids[:included_message_count]
-            summary_text = await ai_client.generate_summary_grouped(grouped_data)
+            summary_result = await ai_client.generate_summary_grouped(grouped_data)
             
             # Delete messages after summarization
             db.delete_messages(all_message_ids)
@@ -424,7 +443,10 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count_info = f"{included_message_count} новых сообщений"
             if was_trimmed:
                 count_info += f" из {len(all_messages)} доступных"
-            response = f"📝 Саммари {count_info} из {len(grouped_data)} тред(ов):\n\n{summary_text}"
+            response = (
+                f"📝 Саммари {count_info} из {len(grouped_data)} тред(ов):\n\n"
+                f"{summary_result.text}{format_token_usage(summary_result.token_usage)}"
+            )
             
             await send_long_reply(message, response, status_message)
             logger.info(
@@ -470,7 +492,7 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             message_ids = [msg[0] for msg in messages[:len(formatted_messages)]]
             
             # Generate summary using AI
-            summary_text = await ai_client.generate_summary(formatted_messages)
+            summary_result = await ai_client.generate_summary(formatted_messages)
             
             # Delete messages after summarization
             db.delete_messages(message_ids)
@@ -479,7 +501,10 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             count_info = f"{len(formatted_messages)} новых сообщений"
             if was_trimmed:
                 count_info += f" из {len(messages)} доступных"
-            response = f"🕐 Автоматическое саммари {count_info}:\n\n{summary_text}"
+            response = (
+                f"🕐 Автоматическое саммари {count_info}:\n\n"
+                f"{summary_result.text}{format_token_usage(summary_result.token_usage)}"
+            )
             await send_long_chat_message(context, chat_id, response)
             logger.info(f"Sent automatic summary for chat {chat_id}, {len(formatted_messages)} of {len(messages)} messages")
         
@@ -519,7 +544,7 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             # Generate combined summary with thread context
             grouped_data, included_message_count, was_trimmed = ai_client.fit_grouped_data_to_input_limit(grouped_data)
             all_message_ids = all_message_ids[:included_message_count]
-            summary_text = await ai_client.generate_summary_grouped(grouped_data)
+            summary_result = await ai_client.generate_summary_grouped(grouped_data)
             
             # Delete messages after summarization
             db.delete_messages(all_message_ids)
@@ -528,7 +553,10 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             count_info = f"{included_message_count} новых сообщений"
             if was_trimmed:
                 count_info += f" из {len(all_messages)} доступных"
-            response = f"🕐 Автоматическое саммари {count_info} из {len(grouped_data)} тред(ов):\n\n{summary_text}"
+            response = (
+                f"🕐 Автоматическое саммари {count_info} из {len(grouped_data)} тред(ов):\n\n"
+                f"{summary_result.text}{format_token_usage(summary_result.token_usage)}"
+            )
             await send_long_chat_message(context, chat_id, response)
             logger.info(
                 f"Sent automatic combined summary for chat {chat_id}, {len(grouped_data)} threads, "
