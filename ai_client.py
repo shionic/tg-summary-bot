@@ -199,12 +199,20 @@ class AIClient:
             "max_tokens": self.max_tokens
         }
 
-    def _build_simple_response_payload(self, request_text: str, max_tokens: int) -> Dict[str, Any]:
+    def _build_simple_response_payload(self, request_text: str, max_tokens: int, username: Optional[str] = None, custom_title: Optional[str] = None) -> Dict[str, Any]:
         """Build a one-shot Chat Completions payload for direct bot mentions."""
         if len(request_text) > self.max_input_chars:
             raise AIInputTooLongError(
                 f"AI input is too long: {len(request_text)} chars, limit is {self.max_input_chars}."
             )
+
+        # Build user context
+        user_context = ""
+        if username or custom_title:
+            user_display = username if username else "Unknown User"
+            if custom_title:
+                user_display = f"{user_display} [{custom_title}]"
+            user_context = f"Пользователь: {user_display}\n\n"
 
         return {
             "model": self.model,
@@ -215,7 +223,7 @@ class AIClient:
                 },
                 {
                     "role": "user",
-                    "content": request_text
+                    "content": f"{user_context}{request_text}"
                 }
             ],
             "temperature": 0.5,
@@ -283,8 +291,8 @@ class AIClient:
         # Extract and return summary
         return self._extract_text_response_from_response(response_data)
 
-    async def generate_simple_response(self, request_text: str, max_tokens: int = 250) -> str:
+    async def generate_simple_response(self, request_text: str, max_tokens: int = 250, username: Optional[str] = None, custom_title: Optional[str] = None) -> str:
         """Generate a short stateless response to one user message."""
-        payload = self._build_simple_response_payload(request_text, max_tokens)
+        payload = self._build_simple_response_payload(request_text, max_tokens, username, custom_title)
         response_data = await self._post_chat_completion(payload)
         return self._extract_summary_from_response(response_data)

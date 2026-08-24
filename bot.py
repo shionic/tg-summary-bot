@@ -246,10 +246,42 @@ async def maybe_handle_simple_ai_request(message: Message, context: ContextTypes
         await safe_reply_text(message, "Напишите вопрос после упоминания бота.")
         return True
 
+    # Get user info
+    user_id = message.from_user.id
+    
+    # Build display name from first name and last name
+    display_name_parts = []
+    if message.from_user.first_name:
+        display_name_parts.append(message.from_user.first_name)
+    if message.from_user.last_name:
+        display_name_parts.append(message.from_user.last_name)
+    
+    # Fallback to username if no display name available
+    username = " ".join(display_name_parts) if display_name_parts else (message.from_user.username or "Unknown User")
+    
+    # Get custom title/tag from message and chat member
+    custom_title = None
+    
+    # First, try to get sender_tag from message (Bot API 9.5+)
+    if hasattr(message, 'sender_tag') and message.sender_tag:
+        custom_title = message.sender_tag
+    
+    # If no sender_tag, try to get custom_title from chat member (for admins)
+    if not custom_title:
+        try:
+            chat_member = await context.bot.get_chat_member(message.chat_id, user_id)
+            if hasattr(chat_member, 'custom_title') and chat_member.custom_title:
+                custom_title = chat_member.custom_title
+            # Also try to get tag from ChatMemberMember or ChatMemberRestricted (Bot API 9.5+)
+            elif hasattr(chat_member, 'tag') and chat_member.tag:
+                custom_title = chat_member.tag
+        except Exception as e:
+            logger.debug(f"Could not get custom title/tag for user {user_id} in simple AI request", exc_info=True)
+
     try:
-        response_text = await ai_client.generate_simple_response(request_text, SIMPLE_AI_MAX_TOKENS)
+        response_text = await ai_client.generate_simple_response(request_text, SIMPLE_AI_MAX_TOKENS, username, custom_title)
         await safe_reply_text(message, response_text)
-        logger.info(f"Generated simple AI response in chat {message.chat_id}")
+        logger.info(f"Generated simple AI response for {username} (title: {custom_title}) in chat {message.chat_id}")
     except AIInputTooLongError:
         await safe_reply_text(message, "Сообщение слишком длинное для AI-запроса.")
     except Exception as e:
