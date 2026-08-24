@@ -9,6 +9,7 @@ from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from database import Database
 from ai_client import AIClient, AIInputTooLongError, AITokenUsage
+from http_client import HTTPRequestError
 
 # Load environment variables
 load_dotenv()
@@ -461,6 +462,25 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
             status_message,
             "Слишком много текста для AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
         )
+    except HTTPRequestError as e:
+        error_str = str(e).lower()
+        # Check for 401 unauthorized or malformed URL errors
+        if "401" in error_str or "malformed" in error_str or "bad request" in error_str:
+            logger.error(f"API error (401/malformed URL), clearing unsummarized messages: {e}")
+            # Clear unsummarized messages based on mode
+            if THREADED_SEPARATED:
+                db.clear_unsummarized_messages(chat_id, thread_id)
+            else:
+                db.clear_all_unsummarized_messages(chat_id)
+            
+            await safe_edit_or_send(
+                message,
+                status_message,
+                "Ошибка API (401 или некорректный URL). База данных несуммаризированных сообщений очищена. Попробуйте снова."
+            )
+        else:
+            logger.exception("HTTP request error generating summary")
+            await safe_edit_or_send(message, status_message, f"Ошибка HTTP-запроса: {str(e)}")
     except Exception as e:
         logger.exception("Error generating summary")
         await safe_edit_or_send(message, status_message, f"Ошибка при генерации саммари: {str(e)}")
@@ -569,6 +589,28 @@ async def auto_summary_job(context: ContextTypes.DEFAULT_TYPE):
             chat_id=chat_id,
             text="Слишком много текста для автоматического AI-запроса. Уменьшите MESSAGE_LIMIT или увеличьте AI_MAX_INPUT_CHARS."
         )
+    except HTTPRequestError as e:
+        error_str = str(e).lower()
+        # Check for 401 unauthorized or malformed URL errors
+        if "401" in error_str or "malformed" in error_str or "bad request" in error_str:
+            logger.error(f"API error (401/malformed URL) in auto summary, clearing unsummarized messages: {e}")
+            # Clear unsummarized messages based on mode
+            if THREADED_SEPARATED:
+                # For separated mode, clear main chat only (thread_id=None)
+                db.clear_unsummarized_messages(chat_id, None)
+            else:
+                db.clear_all_unsummarized_messages(chat_id)
+            
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="Ошибка API в автоматическом саммари (401 или некорректный URL). База данных несуммаризированных сообщений очищена."
+            )
+        else:
+            logger.exception("HTTP request error in automatic summary")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Ошибка HTTP-запроса при автоматическом саммари: {str(e)}"
+            )
     except Exception as e:
         logger.exception("Error in automatic summary job")
 

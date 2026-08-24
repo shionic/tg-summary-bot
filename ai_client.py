@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional, Tuple
 from http_client import HTTPClient
@@ -34,7 +35,8 @@ class AIClient:
         model: str,
         max_tokens: Optional[int] = None,
         max_input_chars: Optional[int] = None,
-        request_timeout: Optional[int] = None
+        request_timeout: Optional[int] = None,
+        prompts_dir: str = "prompts"
     ):
         self.api_endpoint = api_endpoint
         self.api_key = api_key
@@ -42,6 +44,24 @@ class AIClient:
         self.max_tokens = max_tokens or 1500
         self.max_input_chars = max_input_chars or 60000
         self.http_client = HTTPClient(request_timeout or 120)
+        self.prompts_dir = prompts_dir
+        
+        # Load prompts from files
+        self.prompt_summary_single = self._load_prompt("summary_single_thread.txt")
+        self.prompt_summary_grouped = self._load_prompt("summary_grouped_threads.txt")
+        self.prompt_simple_bot = self._load_prompt("simple_bot_response.txt")
+        self.prompt_user_template = self._load_prompt("user_message_template.txt")
+
+    def _load_prompt(self, filename: str) -> str:
+        """Load a prompt from a text file"""
+        filepath = os.path.join(self.prompts_dir, filename)
+        try:
+            with open(filepath, 'r', encoding='utf-8') as f:
+                return f.read().strip()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"Prompt file not found: {filepath}")
+        except Exception as e:
+            raise Exception(f"Error loading prompt from {filepath}: {str(e)}")
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -157,9 +177,11 @@ class AIClient:
             )
         
         if is_grouped:
-            system_content = "Ты дружелюбный помощник, который суммаризирует групповые чаты с несколькими тредами. Пиши естественно и по-человечески, обращайся к участникам по именам. Предоставь краткое саммари для каждого треда отдельно, указывая название треда. Упоминай кто что обсуждал, используя их имена. Используй ТОЛЬКО эти HTML теги для форматирования: <b>жирный</b>, <i>курсив</i>, <u>подчеркнутый</u>, <code>моноширинный</code>. НЕ используй теги <strong>, <em>, <ul>, <li>, <p>, <br> или любые другие - они не поддерживаются. Отвечай на русском языке."
+            system_content = self.prompt_summary_grouped
         else:
-            system_content = "Ты дружелюбный помощник, который суммаризирует групповые чаты. Пиши естественно и по-человечески, обращайся к участникам по именам. Предоставь краткое саммари основных тем и ключевых моментов обсуждения. Упоминай кто что обсуждал, используя их имена. Используй ТОЛЬКО эти HTML теги для форматирования: <b>жирный</b>, <i>курсив</i>, <u>подчеркнутый</u>, <code>моноширинный</code>. НЕ используй теги <strong>, <em>, <ul>, <li>, <p>, <br> или любые другие - они не поддерживаются. Отвечай на русском языке."
+            system_content = self.prompt_summary_single
+        
+        user_content = self.prompt_user_template.replace("{conversation_text}", conversation_text)
         
         return {
             "model": self.model,
@@ -170,7 +192,7 @@ class AIClient:
                 },
                 {
                     "role": "user",
-                    "content": f"Пожалуйста, суммаризируй следующий разговор:\n\n{conversation_text}"
+                    "content": user_content
                 }
             ],
             "temperature": 0.7,
@@ -189,11 +211,7 @@ class AIClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "Ты простой Telegram-бот-помощник. Отвечай на русском языке кратко, "
-                        "понятно и по делу. Не используй Markdown или HTML. Не учитывай историю: "
-                        "отвечай только на текущее сообщение пользователя."
-                    )
+                    "content": self.prompt_simple_bot
                 },
                 {
                     "role": "user",

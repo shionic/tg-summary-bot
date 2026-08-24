@@ -126,3 +126,35 @@ class Database:
         
         conn.commit()
         conn.close()
+    
+    def clear_unsummarized_messages(self, chat_id: int, thread_id: Optional[int] = None):
+        """Clear all unsummarized messages for a specific chat/thread"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        if thread_id is not None:
+            cursor.execute('''
+                DELETE FROM messages 
+                WHERE chat_id = ? AND thread_id = ? AND summarized = 0
+            ''', (chat_id, thread_id))
+        else:
+            cursor.execute('''
+                DELETE FROM messages 
+                WHERE chat_id = ? AND thread_id IS NULL AND summarized = 0
+            ''', (chat_id,))
+        
+        conn.commit()
+        conn.close()
+    
+    def clear_all_unsummarized_messages(self, chat_id: int):
+        """Clear all unsummarized messages from all threads in a chat"""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            DELETE FROM messages 
+            WHERE chat_id = ? AND summarized = 0
+        ''', (chat_id,))
+        
+        conn.commit()
+        conn.close()
